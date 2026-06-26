@@ -1,11 +1,9 @@
-version: '2.2'
-
 services:
      clickhouse_cyg:
        build: .
        restart: 'no'
        volumes:
-         - /home/timofey/feat-extr/snad_clf_features:/data
+         - /Users/anastasialavruhina/feat-extr/output:/data
        user: "1015:1015"
        cpus: 28
        environment:
