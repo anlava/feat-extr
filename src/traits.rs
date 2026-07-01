@@ -2,7 +2,7 @@ use crate::lc::{LightCurve, Observation, Source};
 use dyn_clonable::*;
 
 pub trait SourceDataBase<'a> {
-    type Query: IntoIterator<Item = Observation>;
+    type Query: IntoIterator<Item = Source>;
 
     fn query(&'a mut self, query: &str) -> Self::Query;
 }

@@ -3,8 +3,8 @@ services:
        build: .
        restart: 'no'
        volumes:
-         - /Users/anastasialavruhina/feat-extr/output:/data
-       user: "1015:1015"
+         - /home/lavrukhina/feat-extr/output:/data
+       user: "1016:1016"
        cpus: 28
        environment:
          - RUST_BACKTRACE=1

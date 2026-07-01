@@ -22,7 +22,7 @@ impl Passband {
         3
     }
 
-    fn lcs_index(self) -> usize {
+    pub fn lcs_index(self) -> usize {
         self as usize - 1
     }
 
@@ -68,6 +68,29 @@ pub struct Source {
 }
 
 impl Source {
+    pub fn empty(sid: u64) -> Self {
+        Self {
+            sid,
+            lcs: [
+                LightCurve {
+                    t: vec![],
+                    mag: vec![],
+                    w: vec![],
+                },
+                LightCurve {
+                    t: vec![],
+                    mag: vec![],
+                    w: vec![],
+                },
+                LightCurve {
+                    t: vec![],
+                    mag: vec![],
+                    w: vec![],
+                },
+            ],
+        }
+    }
+
     pub fn lc(&self, passband: Passband) -> &LightCurve {
         &self.lcs[passband.lcs_index()]
     }
@@ -115,6 +138,11 @@ pub struct LightCurve {
 }
 
 impl LightCurve {
+    pub fn from_arrays(t: Vec<f32>, mag: Vec<f32>, magerr: Vec<f32>) -> Self {
+        let w: Vec<f32> = magerr.iter().map(|&e| e.powi(-2)).collect();
+        Self { t, mag, w }
+    }
+
     pub fn push_observation(&mut self, obs: &Observation) {
         self.t.push(obs.t);
         self.mag.push(obs.mag);

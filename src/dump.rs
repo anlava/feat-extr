@@ -3,6 +3,7 @@ use crate::lc::{Passband, Source};
 use crate::traits::*;
 
 use crossbeam::channel::{bounded as bounded_channel, Receiver, Sender};
+use std::cell::RefCell;
 use light_curve_feature::{Feature, FeatureEvaluator, FeatureNamesDescriptionsTrait, TimeSeries};
 use light_curve_interpol::Interpolator;
 use num_cpus;
@@ -120,32 +121,48 @@ impl FeatureDump {
     }
 }
 
+thread_local! {
+    static FLUX_BUF: RefCell<Vec<f32>> = RefCell::new(Vec::new());
+    static FLUX_WEIGHT_BUF: RefCell<Vec<f32>> = RefCell::new(Vec::new());
+}
+
 impl Dump for FeatureDump {
     fn eval(&self, source: &Source) -> Vec<u8> {
         let mut result = vec![];
         for &passband in self.passbands.iter() {
             let lc = source.lc(passband);
-            let flux: Vec<_> = lc.mag.iter().copied().map(mag_to_flux).collect();
-            let flux_weight: Vec<_> = flux
-                .iter()
-                .zip(lc.w.iter())
-                .map(|(f, w_m)| w_m / f32::powi(0.4 * f32::ln(10.0) * f, 2))
-                .collect();
-            let ts_magn = TimeSeries::new(&lc.t, &lc.mag, &lc.w);
-            let ts_flux = TimeSeries::new(&lc.t, &flux, &flux_weight);
-            for (feature_extractor, ts) in &mut [
-                (&self.magn_feature_extractor, ts_magn),
-                (&self.flux_feature_extractor, ts_flux),
-            ] {
-                feature_extractor
-                    .eval(ts)
-                    .expect("Some feature cannot be extracted")
-                    .iter()
-                    .for_each(|x| {
-                        let bytes = x.to_bits().to_ne_bytes();
-                        result.extend_from_slice(&bytes);
-                    });
-            }
+            FLUX_BUF.with(|flux_buf| {
+                FLUX_WEIGHT_BUF.with(|flux_weight_buf| {
+                    let mut flux = flux_buf.borrow_mut();
+                    let mut flux_weight = flux_weight_buf.borrow_mut();
+                    flux.clear();
+                    flux.reserve(lc.mag.len());
+                    flux.extend(lc.mag.iter().copied().map(mag_to_flux));
+                    flux_weight.clear();
+                    flux_weight.reserve(lc.mag.len());
+                    let coeff = 0.4 * f32::ln(10.0);
+                    flux_weight.extend(
+                        flux.iter()
+                            .zip(lc.w.iter())
+                            .map(|(f, w_m)| w_m / (coeff * f).powi(2)),
+                    );
+                    let ts_magn = TimeSeries::new(&lc.t, &lc.mag, &lc.w);
+                    let ts_flux = TimeSeries::new(&lc.t, &flux[..], &flux_weight[..]);
+                    for (feature_extractor, ts) in &mut [
+                        (&self.magn_feature_extractor, ts_magn),
+                        (&self.flux_feature_extractor, ts_flux),
+                    ] {
+                        feature_extractor
+                            .eval(ts)
+                            .expect("Some feature cannot be extracted")
+                            .iter()
+                            .for_each(|x| {
+                                let bytes = x.to_bits().to_ne_bytes();
+                                result.extend_from_slice(&bytes);
+                            });
+                    }
+                });
+            });
         }
         result
     }

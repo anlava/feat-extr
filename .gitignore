@@ -1,3 +1,11 @@
 target/
 test-features/
 snad_clf_features/
+output/
+app_copy
+app_debug
+perf.data
+perf.data.old
+symfs/
+*.log
+*.tar.gz

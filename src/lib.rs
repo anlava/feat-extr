@@ -32,7 +32,7 @@ mod lc;
 mod traits;
 #[cfg(feature = "hdf")]
 use traits::Cache;
-use traits::{ObservationsToSources, SourceDataBase};
+use traits::SourceDataBase;
 
 pub fn run(config: Config) {
     let mut dumper = Dumper::new(&config.passbands);
@@ -109,8 +109,7 @@ fn dump_from_db(dumper: &mut Dumper, config: &Config) {
         DataBase::ClickHouse => {
             let mut source_db = CHSourceDataBase::new(&config.connection_config);
             let query = source_db.query(&config.sql_query);
-            let source_iter = query.into_iter().sources(config.light_curves_are_sorted);
-            dumper.dump_query_iter(source_iter);
+            dumper.dump_query_iter(query.into_iter());
         }
     }
 }

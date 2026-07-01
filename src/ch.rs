@@ -1,5 +1,5 @@
-use crate::lc::{Observation, Passband, MJD0};
-use crate::traits::{ObservationsToSources, SourceDataBase};
+use crate::lc::{LightCurve, Passband, Source, MJD0};
+use crate::traits::SourceDataBase;
 use async_std::task;
 use clickhouse_rs::errors::Error;
 use clickhouse_rs::types::{Block, FromSql};
@@ -38,7 +38,7 @@ impl<'a> CHQuery<'a> {
 }
 
 impl<'a> IntoIterator for CHQuery<'a> {
-    type Item = Observation;
+    type Item = Source;
     type IntoIter = CHQueryIterator<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -87,26 +87,22 @@ impl<'a> CHQueryIterator<'a> {
         Self { query, block: None }
     }
 
-    fn row_to_obs(row: Row) -> Observation {
+    fn row_to_source(row: Row) -> Source {
         let sid: u64 = row.get("sid").unwrap();
         let filter: u8 = row.get("filter").unwrap();
-        let mjd: f64 = row.get("mjd").unwrap();
-        let t = (mjd - MJD0) as f32;
-        let mag: f32 = row.get("mag").unwrap();
-        let magerr: f32 = row.get("magerr").unwrap();
-        let w = magerr.powi(-2);
-        Observation {
-            sid,
-            passband: Passband::from_code(filter),
-            t,
-            mag,
-            w,
-        }
+        let mjd: Vec<f64> = row.get("mjd").unwrap();
+        let mag: Vec<f32> = row.get("mag").unwrap();
+        let magerr: Vec<f32> = row.get("magerr").unwrap();
+        let passband = Passband::from_code(filter);
+        let t: Vec<f32> = mjd.into_iter().map(|x| (x - MJD0) as f32).collect();
+        let mut source = Source::empty(sid);
+        source.lcs[passband.lcs_index()] = LightCurve::from_arrays(t, mag, magerr);
+        source
     }
 }
 
 impl<'a> Iterator for CHQueryIterator<'a> {
-    type Item = Observation;
+    type Item = Source;
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.block.is_none()
@@ -121,7 +117,7 @@ impl<'a> Iterator for CHQueryIterator<'a> {
         match &mut self.block {
             Some(cur_block) => {
                 cur_block.idx += 1;
-                Some(Self::row_to_obs(Row {
+                Some(Self::row_to_source(Row {
                     block: &cur_block.block,
                     idx: cur_block.idx - 1,
                 }))
@@ -130,5 +126,3 @@ impl<'a> Iterator for CHQueryIterator<'a> {
         }
     }
 }
-
-impl<'a> ObservationsToSources for CHQueryIterator<'a> {}

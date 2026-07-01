@@ -22,7 +22,9 @@ pub fn arg_matches() -> ArgMatches<'static> {
         .arg(Arg::with_name("sql_query").required(true).index(2).help(
             "SQL query to be sent to DB\
                 Must return a response with these columns in this particular order:\
-                sid, mjd, filter, mag, magerr",
+                sid, filter, mjd, mag, magerr.\
+                The mjd, mag and magerr columns can be either scalar or Array types;\
+                if they are arrays, each row represents a single source light curve",
         ))
         .arg(
             Arg::with_name("connection_config")
