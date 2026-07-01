@@ -32,7 +32,7 @@ SETTINGS max_memory_usage = 50000000000
 "
 
 #--build --no-cache
-docker-compose run --rm clickhouse_cyg /app \
+docker-compose run --user "$(id -u):$(id -g)" --rm clickhouse_cyg /app \
     clickhouse \
     "$QUERY" \
     --passbands=${PASSBAND_STR} \

@@ -9,3 +9,7 @@ perf.data.old
 symfs/
 *.log
 *.tar.gz
+.venv/
+intel-gpg-key.pub
+intel-oneapi-archive-keyring.gpg
+kimi-export-*.md

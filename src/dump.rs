@@ -6,10 +6,10 @@ use crossbeam::channel::{bounded as bounded_channel, Receiver, Sender};
 use std::cell::RefCell;
 use light_curve_feature::{Feature, FeatureEvaluator, FeatureNamesDescriptionsTrait, TimeSeries};
 use light_curve_interpol::Interpolator;
-use num_cpus;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::iter::Iterator;
+use std::sync::Arc;
 use std::thread;
 
 fn mag_to_flux(mag: f32) -> f32 {
@@ -25,19 +25,27 @@ struct FluxDump {
 
 impl Dump for FluxDump {
     fn eval(&self, source: &Source) -> Vec<u8> {
-        let mut result = vec![];
-        for &passband in self.passbands.iter() {
-            let lc = source.lc(passband);
-            let flux: Vec<_> = lc.mag.iter().copied().map(mag_to_flux).collect();
-            self.interpolator
-                .interpolate(&lc.t[..], &flux[..])
-                .iter()
-                .for_each(|x| {
-                    let bytes = x.to_bits().to_ne_bytes();
-                    result.extend_from_slice(&bytes);
+        FLUX_DUMP_RESULT_BUF.with(|result_buf| {
+            let mut result = result_buf.borrow_mut();
+            result.clear();
+            for &passband in self.passbands.iter() {
+                let lc = source.lc(passband);
+                FLUX_DUMP_FLUX_BUF.with(|flux_buf| {
+                    let mut flux = flux_buf.borrow_mut();
+                    flux.clear();
+                    flux.reserve(lc.mag.len());
+                    flux.extend(lc.mag.iter().copied().map(mag_to_flux));
+                    self.interpolator
+                        .interpolate(&lc.t[..], &flux[..])
+                        .iter()
+                        .for_each(|x| {
+                            let bytes = x.to_bits().to_ne_bytes();
+                            result.extend_from_slice(&bytes);
+                        });
                 });
-        }
-        result
+            }
+            std::mem::take(&mut *result)
+        })
     }
 
     fn get_names(&self) -> Vec<&str> {
@@ -124,47 +132,53 @@ impl FeatureDump {
 thread_local! {
     static FLUX_BUF: RefCell<Vec<f32>> = RefCell::new(Vec::new());
     static FLUX_WEIGHT_BUF: RefCell<Vec<f32>> = RefCell::new(Vec::new());
+    static RESULT_BUF: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+    static FLUX_DUMP_FLUX_BUF: RefCell<Vec<f32>> = RefCell::new(Vec::new());
+    static FLUX_DUMP_RESULT_BUF: RefCell<Vec<u8>> = RefCell::new(Vec::new());
 }
 
 impl Dump for FeatureDump {
     fn eval(&self, source: &Source) -> Vec<u8> {
-        let mut result = vec![];
-        for &passband in self.passbands.iter() {
-            let lc = source.lc(passband);
-            FLUX_BUF.with(|flux_buf| {
-                FLUX_WEIGHT_BUF.with(|flux_weight_buf| {
-                    let mut flux = flux_buf.borrow_mut();
-                    let mut flux_weight = flux_weight_buf.borrow_mut();
-                    flux.clear();
-                    flux.reserve(lc.mag.len());
-                    flux.extend(lc.mag.iter().copied().map(mag_to_flux));
-                    flux_weight.clear();
-                    flux_weight.reserve(lc.mag.len());
-                    let coeff = 0.4 * f32::ln(10.0);
-                    flux_weight.extend(
-                        flux.iter()
-                            .zip(lc.w.iter())
-                            .map(|(f, w_m)| w_m / (coeff * f).powi(2)),
-                    );
-                    let ts_magn = TimeSeries::new(&lc.t, &lc.mag, &lc.w);
-                    let ts_flux = TimeSeries::new(&lc.t, &flux[..], &flux_weight[..]);
-                    for (feature_extractor, ts) in &mut [
-                        (&self.magn_feature_extractor, ts_magn),
-                        (&self.flux_feature_extractor, ts_flux),
-                    ] {
-                        feature_extractor
-                            .eval(ts)
-                            .expect("Some feature cannot be extracted")
-                            .iter()
-                            .for_each(|x| {
-                                let bytes = x.to_bits().to_ne_bytes();
-                                result.extend_from_slice(&bytes);
-                            });
-                    }
+        RESULT_BUF.with(|result_buf| {
+            let mut result = result_buf.borrow_mut();
+            result.clear();
+            for &passband in self.passbands.iter() {
+                let lc = source.lc(passband);
+                FLUX_BUF.with(|flux_buf| {
+                    FLUX_WEIGHT_BUF.with(|flux_weight_buf| {
+                        let mut flux = flux_buf.borrow_mut();
+                        let mut flux_weight = flux_weight_buf.borrow_mut();
+                        flux.clear();
+                        flux.reserve(lc.mag.len());
+                        flux.extend(lc.mag.iter().copied().map(mag_to_flux));
+                        flux_weight.clear();
+                        flux_weight.reserve(lc.mag.len());
+                        let coeff = 0.4 * f32::ln(10.0);
+                        flux_weight.extend(
+                            flux.iter()
+                                .zip(lc.w.iter())
+                                .map(|(f, w_m)| w_m / (coeff * f).powi(2)),
+                        );
+                        let ts_magn = TimeSeries::new(&lc.t, &lc.mag, &lc.w);
+                        let ts_flux = TimeSeries::new(&lc.t, &flux[..], &flux_weight[..]);
+                        for (feature_extractor, ts) in &mut [
+                            (&self.magn_feature_extractor, ts_magn),
+                            (&self.flux_feature_extractor, ts_flux),
+                        ] {
+                            feature_extractor
+                                .eval(ts)
+                                .expect("Some feature cannot be extracted")
+                                .iter()
+                                .for_each(|x| {
+                                    let bytes = x.to_bits().to_ne_bytes();
+                                    result.extend_from_slice(&bytes);
+                                });
+                        }
+                    });
                 });
-            });
-        }
-        result
+            }
+            std::mem::take(&mut *result)
+        })
     }
 
     fn get_names(&self) -> Vec<&str> {
@@ -222,15 +236,17 @@ impl Dump for SIDDump {
 pub struct Dumper {
     passbands: Vec<Passband>,
     dumps: Vec<Box<dyn Dump + 'static>>,
+    n_threads: usize,
     #[cfg(feature = "hdf")]
     write_caches: Vec<Box<dyn Cache>>,
 }
 
 impl Dumper {
-    pub fn new(passbands: &[Passband]) -> Self {
+    pub fn new(passbands: &[Passband], n_threads: usize) -> Self {
         Self {
             passbands: passbands.to_vec(),
             dumps: vec![],
+            n_threads,
             #[cfg(feature = "hdf")]
             write_caches: vec![],
         }
@@ -281,36 +297,54 @@ impl Dumper {
 
     fn writer_from_path(path: &str) -> BufWriter<File> {
         let file = File::create(path).unwrap();
-        BufWriter::new(file)
+        BufWriter::with_capacity(8 * 1024 * 1024, file)
     }
 
     fn dump_eval_worker(
         dumps: Vec<Box<dyn Dump>>,
-        receiver: Receiver<Source>,
+        receiver: Receiver<Arc<Source>>,
         sender: Sender<Vec<Vec<u8>>>,
     ) {
         while let Ok(source) = receiver.recv() {
             let results = dumps.iter().map(|dump| dump.eval(&source)).collect();
             sender
                 .send(results)
-                .expect("Cannot send evaluation result to writer");
+                .expect("Cannot send evaluation result to dispatcher");
         }
     }
 
-    fn dump_writer_worker(dumps: Vec<Box<dyn Dump>>, receiver: Receiver<Vec<Vec<u8>>>) {
-        let mut writers: Vec<_> = dumps
-            .iter()
-            .map(|dump| Self::writer_from_path(dump.get_value_path()))
-            .collect();
+    fn dump_writer_worker(dump: Box<dyn Dump>, receiver: Receiver<Vec<u8>>) {
+        let mut writer = Self::writer_from_path(dump.get_value_path());
         while let Ok(data) = receiver.recv() {
-            for (x, writer) in data.iter().zip(writers.iter_mut()) {
-                writer.write(&x[..]).expect("Cannot write to file");
+            writer.write_all(&data[..]).expect("Cannot write to file");
+        }
+    }
+
+    fn dump_dispatcher_worker(
+        n_dumps: usize,
+        receiver: Receiver<Vec<Vec<u8>>>,
+        senders: Vec<Sender<Vec<u8>>>,
+        flush_threshold: usize,
+    ) {
+        let mut buffers: Vec<Vec<u8>> = (0..n_dumps).map(|_| Vec::new()).collect();
+        while let Ok(results) = receiver.recv() {
+            for (i, result) in results.into_iter().enumerate() {
+                buffers[i].extend_from_slice(&result);
+                if buffers[i].len() >= flush_threshold {
+                    let buf = std::mem::take(&mut buffers[i]);
+                    senders[i].send(buf).expect("Cannot send to writer");
+                }
+            }
+        }
+        for (i, buf) in buffers.into_iter().enumerate() {
+            if !buf.is_empty() {
+                senders[i].send(buf).expect("Cannot send to writer");
             }
         }
     }
 
     #[cfg(feature = "hdf")]
-    fn cache_writer_worker(receiver: Receiver<Source>, cache: Box<dyn Cache>) {
+    fn cache_writer_worker(receiver: Receiver<Arc<Source>>, cache: Box<dyn Cache>) {
         let mut writer = cache.writer();
 
         while let Ok(source) = receiver.recv() {
@@ -320,31 +354,53 @@ impl Dumper {
 
     pub fn dump_query_iter(&self, source_iter: impl Iterator<Item = Source>) {
         const CHANNEL_CAP: usize = 1 << 10;
+        const FLUSH_THRESHOLD: usize = 64 * 1024;
 
-        let (dump_eval_sender, dump_eval_receiver) = bounded_channel(CHANNEL_CAP);
-        let (dump_writer_sender, dump_writer_receiver) = bounded_channel(CHANNEL_CAP);
+        let (dump_eval_sender, dump_eval_receiver) =
+            bounded_channel::<Arc<Source>>(CHANNEL_CAP);
+        let (dispatcher_sender, dispatcher_receiver) = bounded_channel(CHANNEL_CAP);
         #[cfg(feature = "hdf")]
         let (cache_writer_senders, cache_writer_receivers): (Vec<_>, Vec<_>) = self
             .write_caches
             .iter()
-            .map(|_| bounded_channel(CHANNEL_CAP))
+            .map(|_| bounded_channel::<Arc<Source>>(CHANNEL_CAP))
             .unzip();
 
-        let dump_eval_thread_pool: Vec<_> = (0..num_cpus::get())
+        let (writer_senders, writer_receivers): (Vec<_>, Vec<_>) = (0..self.dumps.len())
+            .map(|_| bounded_channel::<Vec<u8>>(CHANNEL_CAP))
+            .unzip();
+
+        let dump_eval_thread_pool: Vec<_> = (0..self.n_threads)
             .map(|_| {
                 let dumps = self.dumps.clone();
                 let receiver = dump_eval_receiver.clone();
-                let sender = dump_writer_sender.clone();
+                let sender = dispatcher_sender.clone();
                 thread::spawn(move || Self::dump_eval_worker(dumps, receiver, sender))
             })
             .collect();
         // Remove channel parts that are cloned and moved to workers
         drop(dump_eval_receiver);
-        drop(dump_writer_sender);
+        drop(dispatcher_sender);
 
-        let dumps = self.dumps.clone();
-        let dump_writer_thread =
-            thread::spawn(move || Self::dump_writer_worker(dumps, dump_writer_receiver));
+        let n_dumps = self.dumps.len();
+        let dispatcher_thread = thread::spawn(move || {
+            Self::dump_dispatcher_worker(
+                n_dumps,
+                dispatcher_receiver,
+                writer_senders,
+                FLUSH_THRESHOLD,
+            )
+        });
+
+        let writer_threads: Vec<_> = self
+            .dumps
+            .iter()
+            .zip(writer_receivers.into_iter())
+            .map(|(dump, receiver)| {
+                let dump = dump.clone();
+                thread::spawn(move || Self::dump_writer_worker(dump, receiver))
+            })
+            .collect();
 
         #[cfg(feature = "hdf")]
         let cache_write_thread_pool: Vec<_> = self
@@ -358,10 +414,11 @@ impl Dumper {
             .collect();
 
         for source in source_iter {
+            let source = Arc::new(source);
             #[cfg(feature = "hdf")]
             for sender in cache_writer_senders.iter() {
                 sender
-                    .send(source.clone())
+                    .send(Arc::clone(&source))
                     .expect("Cannot send task to cache worker");
             }
             // Send source to eval worker pool
@@ -370,16 +427,19 @@ impl Dumper {
                 .expect("Cannot send task to eval worker");
         }
 
-        // Remove senders or writer_thread will never join
+        // Remove senders or threads will never join
         drop(dump_eval_sender);
         #[cfg(feature = "hdf")]
         drop(cache_writer_senders);
         for thread in dump_eval_thread_pool {
             thread.join().expect("Dumper eval worker panicked");
         }
-        dump_writer_thread
+        dispatcher_thread
             .join()
-            .expect("Dumper writer worker panicked");
+            .expect("Dumper dispatcher worker panicked");
+        for thread in writer_threads {
+            thread.join().expect("Dumper writer worker panicked");
+        }
         #[cfg(feature = "hdf")]
         for thread in cache_write_thread_pool {
             thread.join().expect("Dumper cache writer worker panicked");

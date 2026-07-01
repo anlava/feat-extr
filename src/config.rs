@@ -6,6 +6,7 @@ use base64::{self, Engine};
 use clap::{App, Arg, ArgMatches};
 #[cfg(feature = "hdf")]
 use md5;
+use num_cpus;
 #[cfg(feature = "hdf")]
 use std::ops::Deref;
 use std::path::Path;
@@ -104,6 +105,12 @@ pub fn arg_matches() -> ArgMatches<'static> {
                 .takes_value(false)
                 .help("Do not output sid data file"),
         )
+        .arg(
+            Arg::with_name("threads")
+                .long("threads")
+                .takes_value(true)
+                .help("Number of evaluation threads (default: number of CPUs)"),
+        )
         .get_matches()
 }
 
@@ -117,6 +124,7 @@ pub struct Config {
     pub connection_config: String,
     pub light_curves_are_sorted: bool,
     pub passbands: Vec<Passband>,
+    pub n_threads: usize,
     pub sid_path: Option<String>,
     pub interpolation_config: Option<InterpolationConfig>,
     pub feature_config: Option<FeatureConfig>,
@@ -143,6 +151,7 @@ impl Config {
         feature_version: &str,
         cache_dir: Option<&str>,
         no_sid: bool,
+        n_threads: Option<usize>,
     ) -> Self {
         let database = match database_type {
             "clickhouse" => DataBase::ClickHouse,
@@ -152,6 +161,7 @@ impl Config {
             .chars()
             .map(|c| c.to_string().into())
             .collect();
+        let n_threads = n_threads.unwrap_or_else(num_cpus::get);
         let sid_path = match !no_sid {
             true => Some(Self::get_path(output_dir, "sid", suffix, ".dat")),
             false => None,
@@ -198,6 +208,7 @@ impl Config {
             connection_config: String::from(connection_config),
             light_curves_are_sorted,
             passbands,
+            n_threads,
             sid_path,
             interpolation_config,
             feature_config,
@@ -221,6 +232,11 @@ impl Config {
             _ => s,
         });
         let no_sid = matches.is_present("no_sid");
+        let n_threads = matches.value_of("threads").map(|s| {
+            s.parse::<usize>().unwrap_or_else(|_| {
+                panic!("invalid --threads value: {}", s)
+            })
+        });
         Self::new(
             database,
             sql_query,
@@ -234,6 +250,7 @@ impl Config {
             feature_version,
             cache_dir,
             no_sid,
+            n_threads,
         )
     }
 }

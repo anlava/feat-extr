@@ -1,5 +1,7 @@
+use crossbeam::channel::bounded as bounded_channel;
 use light_curve_common::linspace;
 use light_curve_interpol::Interpolator;
+use std::thread;
 
 #[cfg(feature = "hdf")]
 use std::fs::File;
@@ -35,7 +37,7 @@ use traits::Cache;
 use traits::SourceDataBase;
 
 pub fn run(config: Config) {
-    let mut dumper = Dumper::new(&config.passbands);
+    let mut dumper = Dumper::new(&config.passbands, config.n_threads);
 
     if let Some(ref sid_path) = config.sid_path {
         dumper.set_sid_writer(sid_path.clone());
@@ -107,9 +109,28 @@ fn dump_data(dumper: &mut Dumper, config: &Config) {
 fn dump_from_db(dumper: &mut Dumper, config: &Config) {
     match config.database {
         DataBase::ClickHouse => {
-            let mut source_db = CHSourceDataBase::new(&config.connection_config);
-            let query = source_db.query(&config.sql_query);
-            dumper.dump_query_iter(query.into_iter());
+            const PREFETCH_CAP: usize = 1 << 10;
+            let (source_sender, source_receiver) =
+                bounded_channel::<crate::lc::Source>(PREFETCH_CAP);
+
+            let connection_config = config.connection_config.clone();
+            let sql_query = config.sql_query.clone();
+
+            let reader_thread = thread::spawn(move || {
+                let mut source_db = CHSourceDataBase::new(&connection_config);
+                let query = source_db.query(&sql_query);
+                for source in query.into_iter() {
+                    if source_sender.send(source).is_err() {
+                        break;
+                    }
+                }
+            });
+
+            dumper.dump_query_iter(source_receiver.iter());
+
+            reader_thread
+                .join()
+                .expect("ClickHouse reader thread panicked");
         }
     }
 }

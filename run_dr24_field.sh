@@ -32,16 +32,17 @@ FROM ztf.dr24_olc
 WHERE (filter = ${PASSBAND_NUM})
   AND (fieldid = ${FIELDID})
   AND (ngoodobs >= ${MINNOBS})
-SETTINGS max_memory_usage = 50000000000
+SETTINGS max_memory_usage = 50000000000, max_block_size = 1000000
 "
 
 docker run --rm \
+    --network clickhouse \
     -v /home/lavrukhina/feat-extr/output:/data \
-    --user 1016:1016 \
+    --user $(id -u):$(id -g) \
     --cpus=${CPUS} \
     feat-extr-clickhouse_cyg:latest /app \
     clickhouse "$QUERY" \
     --passbands=${PASSBAND_STR} \
     --dir=${DIR} --suffix=${SUFFIX} \
     --connect="tcp://default@${HOST}:9000/ztf" \
-    --sorted --features --feature-version=${FEATURE_VERSION}
+    --sorted --features --feature-version=${FEATURE_VERSION} --threads=${CPUS}

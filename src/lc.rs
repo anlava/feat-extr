@@ -139,7 +139,10 @@ pub struct LightCurve {
 
 impl LightCurve {
     pub fn from_arrays(t: Vec<f32>, mag: Vec<f32>, magerr: Vec<f32>) -> Self {
-        let w: Vec<f32> = magerr.iter().map(|&e| e.powi(-2)).collect();
+        let mut w = Vec::with_capacity(magerr.len());
+        for &e in magerr.iter() {
+            w.push(e.powi(-2));
+        }
         Self { t, mag, w }
     }
 
